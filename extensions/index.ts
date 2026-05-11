@@ -299,13 +299,6 @@ function agentLabel(name: string, theme: any): string {
   return `${badge} ${theme.fg("toolTitle", theme.bold(role))}`;
 }
 
-function progressBar(done: number, total: number, width = 20): string {
-  if (total === 0) return "";
-  const filled = Math.round((done / total) * width);
-  const bar = "█".repeat(filled) + "░".repeat(width - filled);
-  return `[${bar}] ${done}/${total}`;
-}
-
 function taskScope(r: AgentResult): string {
   // Extract a short "what am I working on" label from the task string
   const t = r.task;
@@ -330,44 +323,6 @@ function taskScope(r: AgentResult): string {
   return t.split("\n")[0].trim().slice(0, 60);
 }
 
-function renderAgentRow(r: AgentResult, theme: any, roundLabel?: string): string {
-  const icon = r.running
-    ? theme.fg("warning", "◌ ")
-    : r.exitCode === 0
-    ? theme.fg("success", "✓ ")
-    : theme.fg("error", "✗ ");
-
-  const scope = taskScope(r);
-  const roundSuffix = roundLabel ? theme.fg("muted", `  ${roundLabel}`) : "";
-  let text = icon + agentLabel(r.agent, theme) + theme.fg("dim", `  ${scope}`) + roundSuffix;
-
-  const usage = formatUsage(r.usage);
-  if (usage && !r.running) text += theme.fg("dim", `  ${usage}`);
-
-  if (r.running) {
-    const last = r.toolCalls[r.toolCalls.length - 1];
-    if (last) {
-      const filePart = last.args.path
-        ? `  ${theme.fg("dim", String(last.args.path).replace(process.cwd(), "").replace(/^\//, ""))}`
-        : last.args.pattern ? `  ${theme.fg("dim", `"${String(last.args.pattern).slice(0, 30)}"`)}`
-        : last.args.command ? `  ${theme.fg("dim", String(last.args.command).slice(0, 60))}`
-        : "";
-      text += `\n    ${theme.fg("muted", "→")} ${theme.fg("dim", last.name)}${filePart}`;
-    } else {
-      text += `\n    ${theme.fg("muted", "thinking…")}`;
-    }
-  } else if (r.exitCode !== 0) {
-    const errMsg = (r.error ?? r.output ?? "unknown error").trim().slice(0, 120);
-    text += `\n    ${theme.fg("error", "exit " + r.exitCode + " ·")} ${theme.fg("dim", errMsg)}`;
-  } else if (r.output) {
-    const firstLine = r.output.split("\n").find((l) => l.trim()) ?? "";
-    const preview = firstLine.replace(/^#+\s*/, "").slice(0, 80);
-    text += `\n    ${theme.fg("dim", preview.length < firstLine.replace(/^#+\s*/, "").length ? preview + "…" : preview)}`;
-  }
-
-  return text;
-}
-
 function totalUsage(results: AgentResult[]): string {
   const agg = results.reduce(
     (acc, r) => ({
@@ -387,20 +342,6 @@ function totalUsage(results: AgentResult[]): string {
   if (cost) parts.push(cost);
   return parts.join(" · ");
 }
-
-// Detect review round from task string
-function detectRoundLabel(r: AgentResult, allResults: AgentResult[]): string | undefined {
-  const isFix = /fix these (spec|quality) issues/i.test(r.task);
-  if (!isFix) return undefined;
-  const isSpec = /spec/i.test(r.task);
-  const fixRounds = allResults.filter(
-    (x) => x.agent === "tukang" && (isSpec ? /fix these spec/i : /fix these quality/i).test(x.task),
-  );
-  const round = fixRounds.indexOf(r) + 1;
-  const maxRounds = 2;
-  return `(fix round ${round}/${maxRounds})`;
-}
-
 
 // ─── Scope derivation (no agent — pure filesystem) ───────────────────────────
 
@@ -933,77 +874,40 @@ export default function (pi: ExtensionAPI) {
 
       const allResults = details.results;
       const running    = allResults.some((r) => r.running);
-      const doneCount  = allResults.filter((r) => !r.running).length;
-      const totalCount = allResults.length;
       const allOk      = allResults.every((r) => r.exitCode === 0);
 
       // ── header ─────────────────────────────────────────────────────────────
-      const headerIcon = running
+      const running = allResults.some((r) => r.running);
+      const allOk   = allResults.every((r) => r.exitCode === 0);
+
+      // ── header ─────────────────────────────────────────────────────────────
+      const statusIcon = running
         ? theme.fg("warning", "◌")
         : allOk ? theme.fg("success", "✓") : theme.fg("error", "✗");
-
-      const modeLabel = theme.fg("accent", details.mode);
-      const progress  = running
-        ? theme.fg("muted", `  ${progressBar(doneCount, totalCount, 16)}`)
-        : theme.fg("dim", `  ${doneCount}/${totalCount}`);
-
-      const header =
-        `${headerIcon}  ${theme.fg("toolTitle", theme.bold("tim"))}  ${modeLabel}${progress}`;
-
-      // ── phase grouping helper ───────────────────────────────────────────────
-      const phases = (() => {
-        if (details.mode === "build-parallel") {
-          return [
-            { label: "plan",      agents: allResults.filter((r) => r.agent === "planner") },
-            { label: "implement", agents: allResults.filter((r) => r.agent === "tukang") },
-          ].filter((p) => p.agents.length > 0);
-        }
-        if (details.mode === "build") {
-          const planning  = allResults.filter((r) => r.agent === "planner");
-          const implement = allResults.filter((r) => r.agent === "tukang");
-          return [
-            { label: "plan",      agents: planning },
-            { label: "implement", agents: implement },
-          ].filter((p) => p.agents.length > 0);
-        }
-        return [{ label: "", agents: allResults }];
-      })();
+      const header = `${statusIcon}  ${theme.fg("toolTitle", theme.bold("tim"))}  ${theme.fg("accent", details.mode)}`;
 
       // ── expanded view ───────────────────────────────────────────────────────
       if (expanded) {
         const container = new Container();
         container.addChild(new Text(header, 0, 0));
-
-        for (const phase of phases) {
+        for (const r of allResults) {
           container.addChild(new Spacer(1));
-          if (phase.label) {
-            const bar = "─".repeat(Math.max(0, 32 - phase.label.length));
-            container.addChild(new Text(theme.fg("muted", `── ${phase.label} ${bar}`), 0, 0));
-          }
-          for (const r of phase.agents) {
-            container.addChild(new Spacer(1));
-            container.addChild(new Text(
-              theme.fg("muted", "── ") + agentLabel(r.agent, theme) + theme.fg("dim", `  ${formatUsage(r.usage)}`),
-              0, 0,
-            ));
-            if (r.exitCode !== 0 && r.error) {
-              container.addChild(new Text(
-                `  ${theme.fg("error", "exit " + r.exitCode + " ·")} ${theme.fg("dim", r.error.trim().slice(0, 200))}`,
-                0, 0,
-              ));
-            } else if (r.output) {
-              container.addChild(new Markdown(r.output.trim(), 0, 0, getMarkdownTheme()));
-            }
+          const icon = r.running ? theme.fg("warning", "◌") : r.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
+          container.addChild(new Text(
+            `${icon}  ${agentLabel(r.agent, theme)}  ${theme.fg("dim", formatUsage(r.usage))}`,
+            0, 0,
+          ));
+          if (r.exitCode !== 0 && r.error) {
+            container.addChild(new Text(`   ${theme.fg("error", r.error.trim().slice(0, 200))}`, 0, 0));
+          } else if (r.output) {
+            container.addChild(new Markdown(r.output.trim(), 2, 0, getMarkdownTheme()));
           }
         }
-
-        // cost footer
         const cost = totalUsage(allResults);
-        if (cost) {
+        if (cost && !running) {
           container.addChild(new Spacer(1));
-          container.addChild(new Text(theme.fg("dim", `total: ${cost}`), 0, 0));
+          container.addChild(new Text(theme.fg("dim", cost), 0, 0));
         }
-
         return container;
       }
 
@@ -1011,46 +915,48 @@ export default function (pi: ExtensionAPI) {
       const container = new Container();
       container.addChild(new Text(header, 0, 0));
 
-      for (const phase of phases) {
-        if (phase.label) {
-          const bar = "─".repeat(Math.max(0, 28 - phase.label.length));
-          container.addChild(new Text(`  ${theme.fg("muted", `── ${phase.label} ${bar}`)}`, 0, 0));
-        }
-        for (const r of phase.agents) {
-          const roundLabel = detectRoundLabel(r, allResults);
-          container.addChild(new Text(`  ${renderAgentRow(r, theme, roundLabel)}`, 0, 0));
+      const cwd_ = process.cwd();
+      for (const r of allResults) {
+        const icon = r.running
+          ? theme.fg("warning", "◌")
+          : r.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
 
-          // show tool calls + text responses for running agents, last text for done agents
-          const cwd_ = process.cwd();
-          if (r.running) {
-            for (const tc of r.toolCalls) {
-              if (tc.name === "text") {
-                const firstLine = (tc.text ?? "").split("\n").find(l => l.trim()) ?? "";
-                container.addChild(new Text(`      ${theme.fg("accent", "›")} ${theme.fg("dim", firstLine.slice(0, 100))}`, 0, 0));
-              } else {
-                const filePart = tc.args.path
-                  ? ` ${String(tc.args.path).replace(cwd_, "").replace(/^\//, "")}`
-                  : tc.args.pattern ? ` "${String(tc.args.pattern).slice(0, 40)}"`
-                  : tc.args.command ? ` ${String(tc.args.command).replace(cwd_, "~").slice(0, 60)}` : "";
-                container.addChild(new Text(`      ${theme.fg("muted", "·")} ${theme.fg("dim", tc.name + filePart)}`, 0, 0));
-              }
-            }
-            if (r.toolCalls.length === 0) {
-              container.addChild(new Text(`      ${theme.fg("muted", "thinking…")}`, 0, 0));
-            }
+        // current action: last tool call or last text
+        let action = "";
+        if (r.running) {
+          const last = [...r.toolCalls].reverse().find(tc => tc.name !== "text") ;
+          const lastText = [...r.toolCalls].reverse().find(tc => tc.name === "text");
+          if (lastText?.text) {
+            const line = lastText.text.split("\n").find(l => l.trim()) ?? "";
+            action = theme.fg("dim", line.slice(0, 80));
+          } else if (last) {
+            const arg = last.args.path
+              ? String(last.args.path).replace(cwd_, "").replace(/^\//, "")
+              : last.args.pattern ? `"${String(last.args.pattern).slice(0, 30)}"`
+              : last.args.command ? String(last.args.command).replace(cwd_, "~").slice(0, 50)
+              : "";
+            action = theme.fg("dim", `${last.name}${arg ? "  " + arg : ""}`);
           } else {
-            // done: show last AI text response as a summary line
-            const lastText = [...r.toolCalls].reverse().find(tc => tc.name === "text");
-            if (lastText?.text) {
-              const firstLine = lastText.text.split("\n").find(l => l.trim()) ?? "";
-              container.addChild(new Text(`      ${theme.fg("success", "›")} ${theme.fg("dim", firstLine.slice(0, 100))}`, 0, 0));
-            }
+            action = theme.fg("muted", "…");
           }
+        } else if (r.exitCode !== 0) {
+          action = theme.fg("error", (r.error ?? "failed").trim().slice(0, 80));
+        } else {
+          // done: last AI text as summary
+          const lastText = [...r.toolCalls].reverse().find(tc => tc.name === "text");
+          const line = lastText?.text?.split("\n").find(l => l.trim()) ?? r.output?.split("\n").find(l => l.trim()) ?? "";
+          action = theme.fg("dim", line.slice(0, 80));
         }
+
+        const usage = !r.running && r.usage.cost ? theme.fg("dim", `  ${formatCost(r.usage.cost)}`) : "";
+        container.addChild(new Text(
+          `  ${icon}  ${agentLabel(r.agent, theme)}  ${action}${usage}`,
+          0, 0,
+        ));
       }
 
       const cost = totalUsage(allResults);
-      if (cost && !running) container.addChild(new Text(`  ${theme.fg("dim", `total: ${cost}`)}`, 0, 0));
+      if (cost && !running) container.addChild(new Text(`  ${theme.fg("dim", cost)}`, 0, 0));
 
       return container;
     },
