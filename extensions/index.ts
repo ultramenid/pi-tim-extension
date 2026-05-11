@@ -838,29 +838,15 @@ export default function (pi: ExtensionAPI) {
         "build": "success", "build-parallel": "accent",
         "explore": "muted", "research": "muted", "implement": "muted", "chain": "muted",
       };
-      const modeIcons: Record<string, string> = {
-        "build": "⚡", "build-parallel": "⚡⚡",
-        "explore": "🔍", "research": "🌐", "implement": "🔨", "chain": "⛓",
-      };
-
-      const icon = modeIcons[args.mode] ?? "•";
       const color = modeColors[args.mode] ?? "muted";
-      const preview = args.task.length > 70 ? args.task.slice(0, 70) + "…" : args.task;
+      const preview = args.task.length > 80 ? args.task.slice(0, 80) + "…" : args.task;
+      return new Text(
+        `◌  ${theme.fg("toolTitle", theme.bold("tim"))}  ${theme.fg(color, args.mode)}\n   ${theme.fg("dim", preview)}`,
+        0, 0,
+      );
+    },
 
-      let flow = "";
-      if (args.mode === "build")          flow = "planner  →  tukang[]";
-      else if (args.mode === "build-parallel") flow = "planner  →  tukang[]";
-      else if (args.mode === "chain" && args.chain)
-        flow = args.chain.map((s: any) => s.agent).join("  →  ");
-
-      let text =
-        `${icon}  ` +
-        theme.fg("toolTitle", theme.bold("tim")) +
-        "  " +
-        theme.fg(color, args.mode) +
-        `\n   ${theme.fg("dim", preview)}`;
-
-      if (flow) text += `\n   ${theme.fg("muted", flow)}`;
+    renderResult(result, { expanded }, theme, context) {
 
       return new Text(text, 0, 0);
     },
@@ -920,18 +906,18 @@ export default function (pi: ExtensionAPI) {
         // current action: last tool call or last text
         let action = "";
         if (r.running) {
-          const last = [...r.toolCalls].reverse().find(tc => tc.name !== "text") ;
+          const lastTool = [...r.toolCalls].reverse().find(tc => tc.name !== "text");
           const lastText = [...r.toolCalls].reverse().find(tc => tc.name === "text");
           if (lastText?.text) {
             const line = lastText.text.split("\n").find(l => l.trim()) ?? "";
             action = theme.fg("dim", line.slice(0, 80));
-          } else if (last) {
-            const arg = last.args.path
-              ? String(last.args.path).replace(cwd_, "").replace(/^\//, "")
-              : last.args.pattern ? `"${String(last.args.pattern).slice(0, 30)}"`
-              : last.args.command ? String(last.args.command).replace(cwd_, "~").slice(0, 50)
+          } else if (lastTool) {
+            const arg = lastTool.args.path
+              ? String(lastTool.args.path).replace(cwd_, "").replace(/^\//, "")
+              : lastTool.args.pattern ? `"${String(lastTool.args.pattern).slice(0, 30)}"`
+              : lastTool.args.command ? String(lastTool.args.command).replace(cwd_, "~").slice(0, 50)
               : "";
-            action = theme.fg("dim", `${last.name}${arg ? "  " + arg : ""}`);
+            action = theme.fg("dim", `${lastTool.name}${arg ? "  " + arg : ""}`);
           } else {
             action = theme.fg("muted", "…");
           }
@@ -949,6 +935,17 @@ export default function (pi: ExtensionAPI) {
           `  ${icon}  ${agentLabel(r.agent, theme)}  ${action}${usage}`,
           0, 0,
         ));
+
+        // stream: show last 3 LLM text responses while running
+        if (r.running) {
+          const textEntries = r.toolCalls.filter(tc => tc.name === "text").slice(-3);
+          for (const tc of textEntries) {
+            const lines = (tc.text ?? "").split("\n").filter(l => l.trim()).slice(0, 2);
+            for (const line of lines) {
+              container.addChild(new Text(`       ${theme.fg("dim", line.slice(0, 90))}`, 0, 0));
+            }
+          }
+        }
       }
 
       const cost = totalUsage(allResults);
