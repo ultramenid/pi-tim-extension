@@ -877,10 +877,6 @@ export default function (pi: ExtensionAPI) {
       const allOk      = allResults.every((r) => r.exitCode === 0);
 
       // ── header ─────────────────────────────────────────────────────────────
-      const running = allResults.some((r) => r.running);
-      const allOk   = allResults.every((r) => r.exitCode === 0);
-
-      // ── header ─────────────────────────────────────────────────────────────
       const statusIcon = running
         ? theme.fg("warning", "◌")
         : allOk ? theme.fg("success", "✓") : theme.fg("error", "✗");
